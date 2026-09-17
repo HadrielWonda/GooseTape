@@ -1,0 +1,28 @@
+{
+  "name": "goosetape-orchestration",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Ductape orchestration for the GooseTape digit recogniser: durable training features over a C# portable function host.",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc",
+    "publish:features": "tsx src/cli/publish-features.ts",
+    "train": "tsx src/cli/train.ts",
+    "classify": "tsx src/cli/classify.ts",
+    "status": "tsx src/cli/status.ts",
+    "compile:check": "tsx src/cli/compile-check.ts"
+  },
+  "dependencies": {
+    "@ductape/sdk": "0.3.7",
+    "dotenv": "16.4.7"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.5",
+    "tsx": "4.19.2",
+    "typescript": "5.7.3"
+  }
+}

@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <RootNamespace>GooseTape.Functions.Host</RootNamespace>
+    <AssemblyName>GooseTape.Functions.Host</AssemblyName>
+    <UserSecretsId>goosetape-functions-host</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\GooseTape.NeuralNetwork\GooseTape.NeuralNetwork.csproj" />
+  </ItemGroup>
+
+</Project>

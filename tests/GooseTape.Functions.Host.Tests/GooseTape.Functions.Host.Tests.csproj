@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>GooseTape.Functions.Host.Tests</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CA1707;CA1515;CA2007</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="FluentAssertions" Version="[7.0.0,8.0.0)" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="[10.0.0,11.0.0)" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="[17.12.0,18.0.0)" />
+    <PackageReference Include="xunit" Version="[2.9.2,3.0.0)" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="[2.8.2,3.0.0)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\GooseTape.Functions.Host\GooseTape.Functions.Host.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+    <Using Include="FluentAssertions" />
+  </ItemGroup>
+
+</Project>

@@ -55,3 +55,16 @@ CodeCoverage/
 *.VisualState.xml
 TestResult.xml
 nunit-*.xml
+
+# Node / Ductape orchestration
+node_modules/
+dist/
+*.tsbuildinfo
+.env.local
+.env.*.local
+
+# Network checkpoints written by the function host at runtime
+.checkpoints/
+
+# MNIST dataset files (download separately, see README)
+data/

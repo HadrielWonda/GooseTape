@@ -1,0 +1,19 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = crlf
+insert_final_newline = true
+indent_style = space
+indent_size = 4
+trim_trailing_whitespace = true
+
+[*.{json,ts,js,yml,yaml,md}]
+indent_size = 2
+
+[*.cs]
+csharp_style_namespace_declarations = file_scoped:error
+csharp_style_expression_bodied_methods = when_on_single_line:suggestion
+csharp_prefer_braces = true:suggestion
+dotnet_style_require_accessibility_modifiers = for_non_interface_members:error
+dotnet_diagnostic.CA1062.severity = error

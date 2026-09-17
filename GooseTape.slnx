@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/GooseTape.Functions.Host/GooseTape.Functions.Host.csproj" />
+    <Project Path="src/GooseTape.NeuralNetwork/GooseTape.NeuralNetwork.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/GooseTape.Functions.Host.Tests/GooseTape.Functions.Host.Tests.csproj" />
+    <Project Path="tests/GooseTape.NeuralNetwork.Tests/GooseTape.NeuralNetwork.Tests.csproj" />
+  </Folder>
+</Solution>
