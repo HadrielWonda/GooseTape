@@ -14,7 +14,9 @@
     "train": "tsx src/cli/train.ts",
     "classify": "tsx src/cli/classify.ts",
     "status": "tsx src/cli/status.ts",
-    "compile:check": "tsx src/cli/compile-check.ts"
+    "compile:check": "tsx src/cli/compile-check.ts",
+    "doctor": "tsx src/cli/doctor.ts",
+    "setup": "tsx src/cli/setup-product.ts"
   },
   "dependencies": {
     "@ductape/sdk": "0.3.7",

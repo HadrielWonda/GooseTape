@@ -135,7 +135,7 @@ orchestration/     the Ductape layer
 
 - .NET 10 SDK
 - Node.js 18+
-- A Ductape workspace at [cloud.ductape.app](https://cloud.ductape.app) with a product and at least one environment
+- A Ductape workspace at [cloud.ductape.app](https://cloud.ductape.app) and its SDK access key. The product and environment can be created for you, see step 3.
 
 ### 1. Verify the network
 
@@ -157,7 +157,19 @@ Fill in `DUCTAPE_ACCESS_KEY` (workspace → Tokens → SDK Access Key), `DUCTAPE
 
 `.env` is git-ignored. The access key is a shared secret and must never be committed.
 
-### 3. Start the function host
+Ductape namespaces product tags by workspace, as `<workspace>:<product>`. A product named `goosetape` in a workspace named `goose_tape` has the tag `goose_tape:goosetape`, and that full tag is what `DUCTAPE_PRODUCT` needs. Environment slugs are exactly three characters (`dev`, `prd`, and so on).
+
+### 3. Create the product, if you don't have one
+
+```bash
+cd orchestration
+npm install
+npm run setup
+```
+
+This creates the product and environment only if they're missing, so it's safe to re-run. It prints the tag Ductape assigns, so you can check it against `DUCTAPE_PRODUCT`. It runs with the SDK's runtime sync turned off, because with sync on the SDK tries to load the configured product while authenticating, so the call that would create the product fails with `Product/Integration not found`.
+
+### 4. Start the function host
 
 The host needs **the same access key** — it verifies the signature Ductape attaches to every call.
 
@@ -173,33 +185,60 @@ curl http://127.0.0.1:5207/health
 
 Plain HTTP is accepted only for localhost. Anywhere else the endpoint must be HTTPS — both the SDK and this host refuse otherwise.
 
-### 4. Check the features compile in portable mode
+### 5. Check everything lines up
 
 ```bash
-cd orchestration
-npm install
+npm run doctor
 npm run compile:check
 ```
 
-This runs Ductape's own control-flow validator locally. It needs no credentials and catches a native `if` or `for` before anything is published.
+`doctor` is read-only. It checks that the key authenticates, the product and environment exist, and the function host is up and serving the contract. `compile:check` runs Ductape's own control-flow validator over each feature handler locally. It needs no credentials and catches a native `if` or `for` before anything is published.
 
-### 5. Publish and train
+### 6. Publish and train
 
 ```bash
 npm run publish:features
-npm run train -- my-first-run
-npm run status -- <feature-run-id>
+npm run train -- my-first-run            # synthetic data
+npm run train -- my-mnist-run --mnist    # host must be serving MNIST, see Data
 ```
 
-### Watching it survive a failure
+Publishing records the training feature into 20 steps: `initialise-network`, then `train-epoch-N` plus a checkpoint for each of the 8 epochs, then `evaluate-network`, then the accuracy branch.
 
-Kill the function host midway through a run. The feature fails on the epoch in flight; the epochs before it stay completed with their checkpoints intact. Restart the host and resume:
+Two things `compile:check` can't catch get caught at publish time. Every `ctx.step` must record a portable operation: a function, action or database call, not a plain returned value. And the epoch count is fixed by `recordInput`, so changing it means republishing.
 
-```ts
-await ductape.feature.resume({ product, env, feature_id, from_checkpoint: 'epoch-4-complete' });
-```
+### Durability: what is and isn't verified
 
-Training picks up from epoch 5, not from scratch. That is the entire point of the exercise.
+**Verified.** Each epoch is its own step, and the epochs chain correctly. The checkpoints a feature run leaves behind show test loss falling on every epoch: 2.3192 → 0.0110 → … → 0.0008 on the synthetic set. So each epoch continues from the one before it rather than training from scratch. Epochs are also deterministic: the same run through the feature and through direct function calls produces the same final loss.
+
+**Not working yet: Ductape's run-management APIs.** `feature.execute` runs the feature in the local process. Its step and run results do reach Ductape: they're written to the processor store (`/integrations/v1/processor/batch-write`), and every run here can be fetched back by ID. But `feature.status`, `history`, `resume`, `replay` and the other run-management calls read a different store (`/integrations/v1/workflow/:id/...`), and they return nothing for these runs. The SDK defines a `FEATURE_EXECUTE_URL` for the workflow side but never calls it. So on 0.3.7, nothing in the SDK puts a run where those APIs can see it.
+
+The per-epoch checkpoints on the C# side are exactly what a resume would pick up from, and they're all there. What doesn't work yet is asking Ductape to do the resuming. Whether `feature.dispatch` behaves differently is untested.
+
+---
+
+## Results
+
+Both runs executed as the durable `train-digit-recogniser` feature through Ductape: 8 epochs, 20 steps, with every invocation HMAC-signed with the real SDK access key. Accuracy is measured on held-out data the network never trained on.
+
+**Real MNIST**: 784 → 128 → 10, learning rate 0.1, batch size 32, 60,000 training and 10,000 test images. The whole run took 3.6 minutes, about 26 s per epoch in a Release build.
+
+| Checkpoint | Test accuracy | Test loss |
+|---|---|---|
+| untrained | 11.6% | 2.4103 |
+| epoch 1 | 95.0% | 0.1676 |
+| epoch 2 | 96.5% | 0.1174 |
+| epoch 3 | 97.3% | 0.0917 |
+| epoch 4 | 97.4% | 0.0879 |
+| epoch 5 | 97.5% | 0.0864 |
+| epoch 6 | 97.8% | 0.0725 |
+| epoch 7 | 97.5% | 0.0791 |
+| **epoch 8** | **97.9%** | **0.0710** |
+
+That's in line with what this architecture normally reaches with plain SGD. The dip at epoch 7 is ordinary SGD noise.
+
+**Synthetic**: 20 → 32 → 10. It goes from 8.2% to 100%, and classifies clean prototypes of all ten digits at 99.9% confidence. It only proves the plumbing, because the classes are separable by construction.
+
+Run the host with `-c Release` for MNIST. The matrix code is plain managed loops, and JIT optimisation makes a large difference at this scale.
 
 ---
 
@@ -207,7 +246,16 @@ Training picks up from epoch 5, not from scratch. That is the entire point of th
 
 Out of the box the host uses a **synthetic** dataset (20 pixels, 10 separable classes) so the whole pipeline runs without a download. It proves the plumbing, not the model.
 
-For real MNIST, download the four IDX files, then:
+For real MNIST, download the four IDX files into the git-ignored `data/` folder. Google's CVDF mirror is reliable:
+
+```bash
+mkdir -p data && cd data
+for f in train-images-idx3-ubyte train-labels-idx1-ubyte t10k-images-idx3-ubyte t10k-labels-idx1-ubyte; do
+  curl -fLO "https://storage.googleapis.com/cvdf-datasets/mnist/$f.gz"
+done
+```
+
+then configure the host, either in `appsettings.json` or as `Dataset__Provider=idx` style environment variables:
 
 ```json
 "Dataset": {
@@ -220,6 +268,15 @@ For real MNIST, download the four IDX files, then:
 ```
 
 Gzipped files are read directly. The topology's first entry must equal the dataset's pixel count — 784 for MNIST, 20 for synthetic — and the host rejects a mismatch rather than training something meaningless.
+
+---
+
+## Ductape SDK issues found along the way
+
+Both are in `@ductape/sdk` 0.3.7, and both have workarounds in [orchestration/src/config/ductape-client.ts](orchestration/src/config/ductape-client.ts).
+
+- **[#27](https://github.com/Ductape-LLC/ductape-emails/issues/27): the ESM type entry resolves the client to `any`.** `dist/index.d.mts` declares `typeof sdk.default` when `sdk` is already the class. With `skipLibCheck` on, which is the norm, the error is hidden and every client call goes unchecked. Here it hid four mistakes, one of which crashed at runtime. Workaround: type the client from `@ductape/sdk/dist/index`.
+- **[#28](https://github.com/Ductape-LLC/ductape-emails/issues/28): `close()` doesn't drain the result queue, and there's no public flush.** `await ductape.close()` followed by `process.exit()` dropped the final execution record in 3 of 3 trials. A plain exit delivers it anyway, but only because an in-flight request happens to keep Node alive. Workaround: `flushPendingWrites()`, which the CLIs call before exiting.
 
 ---
 

@@ -1,3 +1,4 @@
+import type { IDefineFeatureOptions } from '@ductape/sdk';
 import { openSession } from '../config/ductape-client.js';
 import {
   trainDigitRecogniserFeature,
@@ -11,14 +12,18 @@ const SAMPLE_PIXELS = Array.from({ length: 20 }, () => 0);
 /**
  * Publishes both features to the configured Ductape product.
  *
- * `publishMany` verifies each write by reading it back, and rolls the whole set back if any one
- * write fails, so the product is never left holding half of a definition change.
+ * Each feature goes through `feature.define`, which records the handler into its step graph,
+ * validates it against the portable control flow rules, and creates or updates the remote
+ * feature. `define` fingerprints each definition, so republishing an unchanged feature is a
+ * no-op rather than a duplicate.
+ *
+ * Features are defined one at a time so a failure names the feature it happened in.
  */
 async function main(): Promise<void> {
   const { ductape, environment } = openSession();
 
   console.log(`Publishing features to product ${environment.product} (${environment.env})`);
-  console.log(`Function host: ${environment.functionBaseUrl}`);
+  console.log(`Function host: ${environment.functionBaseUrl}\n`);
 
   const definitions = [
     trainDigitRecogniserFeature(environment.product, environment.functionBaseUrl, DEFAULT_TRAINING_RUN),
@@ -28,13 +33,17 @@ async function main(): Promise<void> {
     }),
   ];
 
-  const published = await ductape.feature.publishMany(environment.product, definitions);
+  for (const definition of definitions) {
+    const defined = await ductape.feature.define(
+      definition as unknown as IDefineFeatureOptions<unknown, unknown>,
+    );
 
-  for (const feature of published.features) {
-    console.log(`  published ${feature.tag} with ${feature.steps.length} step(s)`);
+    const steps = defined.schema.steps.map((step) => step.tag);
+    console.log(`  published ${defined.tag} with ${steps.length} step(s)`);
+    console.log(`    ${steps.join(' -> ')}`);
   }
 
-  console.log(`\nDone. ${published.features.length} feature(s) published.`);
+  console.log(`\nDone. ${definitions.length} feature(s) published.`);
 }
 
 await main();

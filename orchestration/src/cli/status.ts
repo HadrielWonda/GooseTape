@@ -1,10 +1,12 @@
 import { openSession } from '../config/ductape-client.js';
 
 /**
- * Reports the status and per-step history of a feature run.
+ * Reports the status and checkpoints of a feature run.
  *
- * This is the view that makes durability visible: it shows which epochs completed, which one
- * failed, and therefore where a resume would pick up from.
+ * Limitation on `@ductape/sdk` 0.3.7: `feature.status` reads Ductape's workflow store, and runs
+ * started with `feature.execute` are recorded in the processor store instead, so this finds
+ * nothing for them. It is kept for runs that do reach the workflow store. See the README's
+ * Durability section.
  *
  * Usage: `npm run status -- <feature-run-id>`
  */
@@ -24,20 +26,25 @@ async function main(): Promise<void> {
 
   if (status === null) {
     console.error(`No run found with id ${featureId} in ${environment.product}/${environment.env}.`);
+    console.error('Runs started with feature.execute are not visible to feature.status on @ductape/sdk 0.3.7.');
+    console.error('See the Durability section of the README.');
     process.exitCode = 1;
     return;
   }
 
   console.log(`Run ${featureId}`);
-  console.log(`  status:       ${status.status}`);
-  console.log(`  current step: ${status.current_step ?? 'none'}`);
+  console.log(`  status:          ${status.status}`);
+  console.log(`  current step:    ${status.current_step ?? 'none'}`);
+  console.log(`  completed steps: ${status.completed_steps.join(', ') || 'none'}`);
   console.log('');
 
+  // Checkpoints are what a resume picks up from, so they are the useful view of progress.
   const history = await ductape.feature.history(scope);
 
-  console.log('Steps:');
-  for (const step of history.steps ?? []) {
-    console.log(`  ${step.status?.padEnd(10) ?? 'unknown   '} ${step.tag}`);
+  console.log('Checkpoints:');
+  for (const checkpoint of history.checkpoints) {
+    const at = new Date(checkpoint.timestamp).toISOString();
+    console.log(`  ${at}  ${checkpoint.name}  ${JSON.stringify(checkpoint.metadata ?? {})}`);
   }
 }
 

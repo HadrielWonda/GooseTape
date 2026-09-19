@@ -1,4 +1,4 @@
-import { openSession } from '../config/ductape-client.js';
+import { flushPendingWrites, openSession } from '../config/ductape-client.js';
 import {
   DEFAULT_TRAINING_RUN,
   type TrainingRunInput,
@@ -9,15 +9,30 @@ import {
  * Starts a durable training run and reports how it ended.
  *
  * The run identifier defaults to a timestamped value so repeated runs write to distinct
- * checkpoints rather than overwriting one another.
+ * checkpoints rather than overwriting one another. The topology defaults to the synthetic
+ * dataset; pass `--mnist` when the function host is serving real MNIST.
  *
- * Usage: `npm run train -- [runId]`
+ * Usage: `npm run train -- [runId] [--mnist]`
  */
+const MNIST_TOPOLOGY = [784, 128, 10] as const;
+const MNIST_LEARNING_RATE = 0.1;
+const MNIST_BATCH_SIZE = 32;
+
 async function main(): Promise<void> {
   const { ductape, environment } = openSession();
-  const runId = process.argv[2] ?? `run-${Date.now()}`;
+  const positional = process.argv.slice(2).filter((argument) => !argument.startsWith('--'));
+  const useMnist = process.argv.includes('--mnist');
+  const runId = positional[0] ?? `run-${Date.now()}`;
 
-  const input: TrainingRunInput = { ...DEFAULT_TRAINING_RUN, run_id: runId };
+  const input: TrainingRunInput = useMnist
+    ? {
+        ...DEFAULT_TRAINING_RUN,
+        run_id: runId,
+        topology: MNIST_TOPOLOGY,
+        learning_rate: MNIST_LEARNING_RATE,
+        batch_size: MNIST_BATCH_SIZE,
+      }
+    : { ...DEFAULT_TRAINING_RUN, run_id: runId };
 
   console.log(`Starting training run ${runId}`);
   console.log(`  epochs:        ${input.epochs.length}`);
@@ -26,22 +41,38 @@ async function main(): Promise<void> {
   console.log(`  batch size:    ${input.batch_size}`);
   console.log('');
 
-  const result = await ductape.feature.execute<TrainingRunOutput>({
+  const result = await ductape.feature.execute({
     product: environment.product,
     env: environment.env,
     tag: 'train-digit-recogniser',
     input: input as unknown as Record<string, unknown>,
   });
 
-  console.log(`Status: ${result.status}`);
-  console.log(`Feature run: ${result.feature_id ?? 'unknown'}`);
-  console.log(`Output: ${JSON.stringify(result.output, null, 2)}`);
+  const output = result.output as TrainingRunOutput | undefined;
+
+  console.log(`Status:      ${result.status}`);
+  console.log(`Feature run: ${result.feature_id}`);
+  console.log(`Duration:    ${Math.round(result.execution_time)}ms`);
+  console.log(`Steps:       ${result.completed_steps.length} completed`);
+
+  for (const timing of result.step_timings ?? []) {
+    const marker = timing.success ? 'ok  ' : 'FAIL';
+    console.log(`  ${marker} ${timing.tag.padEnd(24)} ${Math.round(timing.duration_ms)}ms`);
+  }
+
+  console.log(`Output:      ${JSON.stringify(output, null, 2)}`);
+
+  // Deliver the run's records before exiting rather than relying on the SDK; see flushPendingWrites.
+  const undelivered = await flushPendingWrites();
+  if (undelivered > 0) {
+    console.warn(`Warning: ${undelivered} run record(s) were not delivered to Ductape before the deadline.`);
+  }
 
   if (result.status !== 'completed') {
-    console.error(
-      `\nRun did not complete. Inspect it with:\n  npm run status -- ${result.feature_id ?? '<feature-run-id>'}` +
-        '\nand resume from the last good epoch with ductape.feature.resume.',
-    );
+    const where = result.failed_step === undefined ? '' : ` (failed at ${result.failed_step})`;
+    console.error(`\nRun did not complete${where}: ${result.error ?? 'no error given'}`);
+    console.error(`Every epoch that completed left its checkpoint (${result.completed_steps.length} step(s) completed).`);
+    console.error('See the Durability section of the README before relying on feature.resume.');
     process.exitCode = 1;
   }
 }

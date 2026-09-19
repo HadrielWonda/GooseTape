@@ -156,22 +156,21 @@ export function trainDigitRecogniserFeature(
         SETUP_STEP_OPTIONS,
       )) as EvaluateNetworkOutput;
 
+      // The outcome is recorded as a checkpoint rather than a step. Every step must record a
+      // portable operation, and "note that the target was met" is not one; a checkpoint is the
+      // primitive meant for marking progress, and it shows up in the run history.
       await ctx.branch(ctx.when.gte(evaluated.accuracy, ctx.input.target_accuracy), {
         then: async () => {
-          await ctx.step('record-target-met', async () => ({
-            run_id: ctx.input.run_id,
+          await ctx.checkpoint('target-met', {
             checkpoint_id: latestCheckpoint,
             accuracy: evaluated.accuracy,
-            target_met: true,
-          }));
+          });
         },
         else: async () => {
-          await ctx.step('record-target-missed', async () => ({
-            run_id: ctx.input.run_id,
+          await ctx.checkpoint('target-missed', {
             checkpoint_id: latestCheckpoint,
             accuracy: evaluated.accuracy,
-            target_met: false,
-          }));
+          });
         },
       });
 

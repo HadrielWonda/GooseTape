@@ -77,18 +77,20 @@ export function classifyDigitFeature(
         CLASSIFY_STEP_OPTIONS,
       )) as ClassifyDigitOutput;
 
+      // Recorded as checkpoints: a step must perform a portable operation, and noting the
+      // confidence band is not one.
       await ctx.branch(ctx.when.gte(prediction.confidence, CONFIDENCE_THRESHOLD), {
         then: async () => {
-          await ctx.step('record-confident-prediction', async () => ({
+          await ctx.checkpoint('confident-prediction', {
             digit: prediction.digit,
             confidence: prediction.confidence,
-          }));
+          });
         },
         else: async () => {
-          await ctx.step('record-unconfident-prediction', async () => ({
+          await ctx.checkpoint('unconfident-prediction', {
             digit: prediction.digit,
             confidence: prediction.confidence,
-          }));
+          });
         },
       });
 

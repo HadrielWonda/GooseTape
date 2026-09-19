@@ -1,4 +1,4 @@
-import { openSession } from '../config/ductape-client.js';
+import { flushPendingWrites, openSession } from '../config/ductape-client.js';
 import type { ClassifyRunOutput } from '../features/classify-digit.feature.js';
 
 /**
@@ -22,15 +22,21 @@ async function main(): Promise<void> {
   const pixels = parsePixels(pixelsArgument);
   const { ductape, environment } = openSession();
 
-  const result = await ductape.feature.execute<ClassifyRunOutput>({
+  const result = await ductape.feature.execute({
     product: environment.product,
     env: environment.env,
     tag: 'classify-digit',
     input: { checkpoint_id: checkpointId, pixels },
   });
 
+  // Deliver the run's records before exiting rather than relying on the SDK; see flushPendingWrites.
+  const undelivered = await flushPendingWrites();
+  if (undelivered > 0) {
+    console.warn(`Warning: ${undelivered} run record(s) were not delivered to Ductape before the deadline.`);
+  }
+
   console.log(`Status: ${result.status}`);
-  console.log(`Output: ${JSON.stringify(result.output, null, 2)}`);
+  console.log(`Output: ${JSON.stringify(result.output as ClassifyRunOutput | undefined, null, 2)}`);
 }
 
 /**
