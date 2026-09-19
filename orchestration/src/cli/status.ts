@@ -3,10 +3,10 @@ import { openSession } from '../config/ductape-client.js';
 /**
  * Reports the status and checkpoints of a feature run.
  *
- * Limitation on `@ductape/sdk` 0.3.7: `feature.status` reads Ductape's workflow store, and runs
- * started with `feature.execute` are recorded in the processor store instead, so this finds
- * nothing for them. It is kept for runs that do reach the workflow store. See the README's
- * Durability section.
+ * Limitation on `@ductape/sdk` 0.3.7: the `/integrations/v1/workflow/` routes behind
+ * `feature.status` and `feature.history` are not served, and the SDK turns the resulting 404
+ * into `null`, so this reports every run as not found (Ductape-LLC/ductape-emails#29). It is
+ * kept so it starts working once those routes exist. See the README's Durability section.
  *
  * Usage: `npm run status -- <feature-run-id>`
  */
@@ -26,7 +26,7 @@ async function main(): Promise<void> {
 
   if (status === null) {
     console.error(`No run found with id ${featureId} in ${environment.product}/${environment.env}.`);
-    console.error('Runs started with feature.execute are not visible to feature.status on @ductape/sdk 0.3.7.');
+    console.error('On @ductape/sdk 0.3.7 the run-status routes are not served, so every run reads as not found (ductape-emails#29).');
     console.error('See the Durability section of the README.');
     process.exitCode = 1;
     return;

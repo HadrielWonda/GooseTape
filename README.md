@@ -1,8 +1,8 @@
 # GooseTape
 
-A from-scratch neural network in C#, trained as a **durable, resumable Ductape workflow**.
+A from-scratch neural network in C#, trained as a **durable Ductape workflow**.
 
-The network is the one from Milan Jovanović's [*I Built a Neural Network in C# From Scratch*](https://youtu.be/wgNZWnua-90) — dense layers, ReLU, softmax, cross-entropy, backpropagation, no ML libraries. What is different here is everything around it: training does not run as a loop inside a process. Each epoch is a **step in a Ductape feature**, checkpointed, individually retryable, and resumable after a crash.
+The network is the one from Milan Jovanović's [*I Built a Neural Network in C# From Scratch*](https://youtu.be/wgNZWnua-90) — dense layers, ReLU, softmax, cross-entropy, backpropagation, no ML libraries. What is different here is everything around it: training does not run as a loop inside a process. Each epoch is a **step in a Ductape feature**, checkpointed and individually retryable. It's designed to resume after a crash, though Ductape can't do that yet on SDK 0.3.7 (see [Durability](#durability-what-is-and-isnt-verified)).
 
 This repo is, in its original spirit, an attempt to break [@snifideezy's Ductape](https://www.ductape.app) by pointing it at a workload it was not designed for.
 
@@ -36,7 +36,7 @@ So a training loop **cannot** be a `for` loop. The options are:
 
 This project uses **both, at different altitudes**:
 
-- The **epoch loop** uses `ctx.each`, so every epoch is a separate durable step that can fail, retry and resume on its own.
+- The **epoch loop** uses `ctx.each`, so every epoch is a separate durable step that can fail and retry on its own, and leaves a checkpoint to resume from.
 - The **mini-batch loop inside an epoch** lives in the C# portable function, where it is one tight numerical loop rather than thousands of workflow steps.
 
 That line is the whole design. Put it too high and you lose durability; too low and you drown the orchestrator in steps.
@@ -210,9 +210,11 @@ Two things `compile:check` can't catch get caught at publish time. Every `ctx.st
 
 **Verified.** Each epoch is its own step, and the epochs chain correctly. The checkpoints a feature run leaves behind show test loss falling on every epoch: 2.3192 → 0.0110 → … → 0.0008 on the synthetic set. So each epoch continues from the one before it rather than training from scratch. Epochs are also deterministic: the same run through the feature and through direct function calls produces the same final loss.
 
-**Not working yet: Ductape's run-management APIs.** `feature.execute` runs the feature in the local process. Its step and run results do reach Ductape: they're written to the processor store (`/integrations/v1/processor/batch-write`), and every run here can be fetched back by ID. But `feature.status`, `history`, `resume`, `replay` and the other run-management calls read a different store (`/integrations/v1/workflow/:id/...`), and they return nothing for these runs. The SDK defines a `FEATURE_EXECUTE_URL` for the workflow side but never calls it. So on 0.3.7, nothing in the SDK puts a run where those APIs can see it.
+**Not working yet: Ductape's run-management APIs** ([#29](https://github.com/Ductape-LLC/ductape-emails/issues/29)). `feature.execute` runs the feature in the local process. Its step and run results do reach Ductape: they're written through `/integrations/v1/processor/batch-write`, and every run here can be fetched back by ID. But `feature.status`, `history`, `stepDetail`, `resume`, `replay`, `restart`, `cancel`, `signal` and `compare` all call routes under `/integrations/v1/workflow/`, and on 0.3.7 **none of those routes are served**. Each returns Express's default `Cannot GET` or `Cannot POST` page, for real run IDs and made-up ones alike.
 
-The per-epoch checkpoints on the C# side are exactly what a resume would pick up from, and they're all there. What doesn't work yet is asking Ductape to do the resuming. Whether `feature.dispatch` behaves differently is untested.
+The SDK hides this. `status()` and `stepDetail()` turn any 404 into `null`, and `resume()` checks `status()` first and throws `Feature <id> not found`. So a missing endpoint reads as a missing run.
+
+The per-epoch checkpoints on the C# side are exactly what a resume would pick up from, and they're all there. What doesn't work is asking Ductape to do the resuming.
 
 ---
 
@@ -273,10 +275,11 @@ Gzipped files are read directly. The topology's first entry must equal the datas
 
 ## Ductape SDK issues found along the way
 
-Both are in `@ductape/sdk` 0.3.7, and both have workarounds in [orchestration/src/config/ductape-client.ts](orchestration/src/config/ductape-client.ts).
+All three are in `@ductape/sdk` 0.3.7. The first two have workarounds in [orchestration/src/config/ductape-client.ts](orchestration/src/config/ductape-client.ts).
 
 - **[#27](https://github.com/Ductape-LLC/ductape-emails/issues/27): the ESM type entry resolves the client to `any`.** `dist/index.d.mts` declares `typeof sdk.default` when `sdk` is already the class. With `skipLibCheck` on, which is the norm, the error is hidden and every client call goes unchecked. Here it hid four mistakes, one of which crashed at runtime. Workaround: type the client from `@ductape/sdk/dist/index`.
 - **[#28](https://github.com/Ductape-LLC/ductape-emails/issues/28): `close()` doesn't drain the result queue, and there's no public flush.** `await ductape.close()` followed by `process.exit()` dropped the final execution record in 3 of 3 trials. A plain exit delivers it anyway, but only because an in-flight request happens to keep Node alive. Workaround: `flushPendingWrites()`, which the CLIs call before exiting.
+- **[#29](https://github.com/Ductape-LLC/ductape-emails/issues/29): the feature run-management routes aren't served.** Every `/integrations/v1/workflow/` route behind `status`, `history`, `resume`, `replay`, `cancel` and the rest returns Express's default 404 page. The SDK reports that as the run not being found. No workaround: see Durability above.
 
 ---
 
