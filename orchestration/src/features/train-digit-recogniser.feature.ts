@@ -11,7 +11,7 @@ import {
  *
  * `epochs` is an explicit list rather than a count. Ductape compiles a feature by recording its
  * handler once into a step graph, so the number of epochs has to be known at definition time;
- * `ctx.each` over this list expands into one durable, individually retryable step per epoch.
+ * `ctx.each` over this list expands into one durable step per epoch.
  * A runtime-sized loop would have to live inside a portable function instead, where it would
  * lose exactly the per-epoch durability this feature exists to provide.
  */
@@ -33,7 +33,14 @@ export interface TrainingRunOutput {
   readonly epochs_completed: number;
 }
 
-/** Retry policy for an epoch. Epochs are deterministic, so a retry recomputes the same result. */
+/**
+ * Retry policy for an epoch. Epochs are deterministic, so a retry recomputes the same result.
+ *
+ * Declared, stored in the published feature, and then ignored: `@ductape/sdk` 0.3.7 applies
+ * retry options only to action steps, and these are function steps. Killing the host mid-epoch
+ * fails the run outright, with no retry attempted (Ductape-LLC/ductape-emails#31). Kept so the
+ * intent is recorded and takes effect once the SDK honours it.
+ */
 const EPOCH_STEP_OPTIONS = {
   retries: 2,
   retry_interval: 5_000,
@@ -65,8 +72,10 @@ export const DEFAULT_TRAINING_RUN: TrainingRunInput = {
  * Builds the durable training feature.
  *
  * Every epoch is a checkpointed step. If the function host dies midway through a run, the
- * completed epochs stay completed and `feature.resume` picks up from the last checkpoint rather
- * than retraining from scratch.
+ * completed epochs stay completed and their checkpoints remain on disk, so only the epoch in
+ * flight is lost. Restarting from one of those checkpoints is a manual act today: on
+ * `@ductape/sdk` 0.3.7 the run-management routes behind `feature.resume` are not served
+ * (Ductape-LLC/ductape-emails#29), and failed steps are not retried (#31).
  *
  * @param product - The Ductape product tag to publish under.
  * @param functionBaseUrl - The C# function host base URL, without a trailing slash.
@@ -134,6 +143,7 @@ export function trainDigitRecogniserFeature(
               learning_rate: ctx.input.learning_rate,
               batch_size: ctx.input.batch_size,
               seed: ctx.input.seed,
+              train_sample_size: ctx.input.train_sample_size,
             }),
           null,
           EPOCH_STEP_OPTIONS,

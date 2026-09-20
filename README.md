@@ -2,7 +2,7 @@
 
 A from-scratch neural network in C#, trained as a **durable Ductape workflow**.
 
-The network is the one from Milan Jovanović's [*I Built a Neural Network in C# From Scratch*](https://youtu.be/wgNZWnua-90) — dense layers, ReLU, softmax, cross-entropy, backpropagation, no ML libraries. What is different here is everything around it: training does not run as a loop inside a process. Each epoch is a **step in a Ductape feature**, checkpointed and individually retryable. It's designed to resume after a crash, though Ductape can't do that yet on SDK 0.3.7 (see [Durability](#durability-what-is-and-isnt-verified)).
+The network is the one from Milan Jovanović's [*I Built a Neural Network in C# From Scratch*](https://youtu.be/wgNZWnua-90) — dense layers, ReLU, softmax, cross-entropy, backpropagation, no ML libraries. What is different here is everything around it: training does not run as a loop inside a process. Each epoch is a **step in a Ductape feature**, checkpointed, so a crash costs one epoch rather than the whole run. The design calls for Ductape to retry a failed epoch and resume a crashed run. On SDK 0.3.7 it does neither, and both have been tested (see [Durability](#durability-what-is-and-isnt-verified)).
 
 This repo is, in its original spirit, an attempt to break [@snifideezy's Ductape](https://www.ductape.app) by pointing it at a workload it was not designed for.
 
@@ -15,7 +15,7 @@ Ductape orchestrates backends: APIs, databases, queues, storage, workflows. It i
 | Concern | Where it lives | Why |
 |---|---|---|
 | Matrix maths, backprop, gradient descent | **C# (.NET 10)** | It is real computation. It belongs in a language with real numerics. |
-| Epoch sequencing, retries, checkpoints, resume, run history | **Ductape features (TypeScript)** | This is orchestration, which is exactly what Ductape is for. |
+| Epoch sequencing, checkpoints, per-step logs | **Ductape features (TypeScript)** | This is orchestration, which is exactly what Ductape is for. Retries and resume belong here too, but 0.3.7 doesn't deliver them. |
 | The boundary between them | **Ductape portable functions over HMAC-signed HTTP** | A first-class Ductape primitive that happens to be language-agnostic. |
 
 Ductape's SDK is Node/TypeScript only — there is no .NET SDK. Portable functions are what make a C# compute tier a legitimate participant rather than a bolt-on.
@@ -36,7 +36,7 @@ So a training loop **cannot** be a `for` loop. The options are:
 
 This project uses **both, at different altitudes**:
 
-- The **epoch loop** uses `ctx.each`, so every epoch is a separate durable step that can fail and retry on its own, and leaves a checkpoint to resume from.
+- The **epoch loop** uses `ctx.each`, so every epoch is a separate durable step. One epoch can fail without costing the epochs before it, and each leaves a checkpoint to resume from.
 - The **mini-batch loop inside an epoch** lives in the C# portable function, where it is one tight numerical loop rather than thousands of workflow steps.
 
 That line is the whole design. Put it too high and you lose durability; too low and you drown the orchestrator in steps.
@@ -97,6 +97,8 @@ Checkpoint identifiers are validated against `[A-Za-z0-9_-]{1,128}` at the bound
 
 Epochs are also **deterministic**: the shuffle seed is derived as `(runSeed * 397) ^ epochNumber`, deliberately *not* `HashCode.Combine`, which is randomised per process and would make a replay in a fresh process shuffle differently. Same inputs, same epoch, same result — which is what lets `train-epoch` be declared `idempotent: true`.
 
+This makes an epoch safe to re-run. Nothing re-runs it automatically, though: on 0.3.7 the retry policy on each step is stored and then ignored, so re-running is a manual act.
+
 ---
 
 ## Layout
@@ -116,11 +118,11 @@ src/GooseTape.Functions.Host/     ASP.NET Core portable function host
   Operations/      the four operations
   Training/        dataset provider, checkpoint service
 
-tests/             67 tests: network maths, gradient checks, HTTP boundary
+tests/             126 tests: network maths, gradient checks, IDX parsing, validation, HTTP boundary
 orchestration/     the Ductape layer
   contracts/       the portable function contract
   features/        the two features
-  cli/             publish, train, status, classify, compile-check
+  cli/             setup, doctor, compile-check, publish, train, classify, status
 ```
 
 ### Interface segregation, concretely
@@ -143,7 +145,11 @@ orchestration/     the Ductape layer
 dotnet test
 ```
 
-67 tests: 46 over the network itself, 21 over the signed HTTP boundary.
+126 tests: 105 over the network itself, 21 over the signed HTTP boundary. Coverage is 93.5% of lines and 82.4% of branches; the network library alone is 96.6%.
+
+```bash
+dotnet test --collect:"XPlat Code Coverage"
+```
 
 The important ones are in `BackpropagationGradientTests` — they check every analytical gradient against a central-difference numerical estimate, which is what catches a transposed matrix or a dropped activation derivative. `PortableFunctionEndpointTests` covers what the boundary must refuse: unsigned calls, tampered signatures, signatures from the wrong key, expired timestamps, a valid signature redirected at another operation, and checkpoint identifiers that try to escape the store.
 
@@ -198,8 +204,9 @@ npm run compile:check
 
 ```bash
 npm run publish:features
-npm run train -- my-first-run            # synthetic data
-npm run train -- my-mnist-run --mnist    # host must be serving MNIST, see Data
+npm run train -- my-first-run                         # synthetic data
+npm run train -- my-mnist-run --mnist                 # host must be serving MNIST, see Data
+npm run train -- my-quick-run --mnist --sample=6000   # each epoch on the first 6,000 images only
 ```
 
 Publishing records the training feature into 20 steps: `initialise-network`, then `train-epoch-N` plus a checkpoint for each of the 8 epochs, then `evaluate-network`, then the accuracy branch.
@@ -209,6 +216,22 @@ Two things `compile:check` can't catch get caught at publish time. Every `ctx.st
 ### Durability: what is and isn't verified
 
 **Verified.** Each epoch is its own step, and the epochs chain correctly. The checkpoints a feature run leaves behind show test loss falling on every epoch: 2.3192 → 0.0110 → … → 0.0008 on the synthetic set. So each epoch continues from the one before it rather than training from scratch. Epochs are also deterministic: the same run through the feature and through direct function calls produces the same final loss.
+
+**Tested: killing the host mid-epoch.** An 8-epoch MNIST run, with the function host killed 8 seconds into epoch 3 and restarted 2 seconds later:
+
+```
+ok   initialise-network       7574ms
+ok   train-epoch-1           96461ms
+ok   train-epoch-2           57101ms
+FAIL train-epoch-3          10885ms   fetch failed
+Status: rolled_back, 5 steps completed
+```
+
+What survived: the checkpoints for epochs 0, 1 and 2, all still on disk. A crash costs the epoch in flight, not the run so far.
+
+What didn't happen: any retry. The restarted host received **zero** requests, and the run had already failed. The status `rolled_back` is nominal, since no step declares a rollback handler and nothing was undone.
+
+**Not working: step retries** ([#31](https://github.com/Ductape-LLC/ductape-emails/issues/31)). Every epoch step carries `retries: 2` with exponential backoff, and reading the definition back out of Ductape confirms it's stored. The local executor runs a step once and, on failure, checks `allow_fail`/`optional` and gives up. It only forwards `retries` for `action` steps, which the processor handles; our epochs are `function` steps, so their retry policy is ignored.
 
 **Not working yet: Ductape's run-management APIs** ([#29](https://github.com/Ductape-LLC/ductape-emails/issues/29)). `feature.execute` runs the feature in the local process. Its step and run results do reach Ductape: they're written through `/integrations/v1/processor/batch-write`, and every run here can be fetched back by ID. But `feature.status`, `history`, `stepDetail`, `resume`, `replay`, `restart`, `cancel`, `signal` and `compare` all call routes under `/integrations/v1/workflow/`, and on 0.3.7 **none of those routes are served**. Each returns Express's default `Cannot GET` or `Cannot POST` page, for real run IDs and made-up ones alike.
 
@@ -237,6 +260,8 @@ Both runs executed as the durable `train-digit-recogniser` feature through Ducta
 | **epoch 8** | **97.9%** | **0.0710** |
 
 That's in line with what this architecture normally reaches with plain SGD. The dip at epoch 7 is ordinary SGD noise.
+
+**Inference**: the `classify-digit` feature, run through Ductape against the epoch 8 checkpoint on real MNIST test images, identified all three sampled digits correctly (7, 2 and 1) at 99.6% confidence or better.
 
 **Synthetic**: 20 → 32 → 10. It goes from 8.2% to 100%, and classifies clean prototypes of all ten digits at 99.9% confidence. It only proves the plumbing, because the classes are separable by construction.
 
@@ -270,6 +295,17 @@ then configure the host, either in `appsettings.json` or as `Dataset__Provider=i
 ```
 
 Gzipped files are read directly. The topology's first entry must equal the dataset's pixel count — 784 for MNIST, 20 for synthetic — and the host rejects a mismatch rather than training something meaningless.
+
+---
+
+## Continuous integration
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push and pull request to `main`, in two jobs, neither of which needs Ductape credentials:
+
+- **.NET** — restore, build, test with coverage, and a check for vulnerable NuGet packages. `Directory.Build.props` sets `TreatWarningsAsErrors` and `EnforceCodeStyleInBuild`, so analyzer and code-style violations fail the build rather than needing a separate lint step.
+- **Orchestration** — `npm ci`, typecheck, and `compile:check`, which runs Ductape's own control-flow validator over each feature handler. The dependency audit is advisory, because its findings sit in `@ductape/sdk`'s dependency tree rather than in this project.
+
+The C# tests are hermetic: they use the synthetic dataset and an in-memory host, so CI never needs MNIST or a running function host.
 
 ---
 

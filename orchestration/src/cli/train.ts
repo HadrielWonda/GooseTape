@@ -12,7 +12,9 @@ import {
  * checkpoints rather than overwriting one another. The topology defaults to the synthetic
  * dataset; pass `--mnist` when the function host is serving real MNIST.
  *
- * Usage: `npm run train -- [runId] [--mnist]`
+ * `--sample=N` trains each epoch on the first N examples only, for quick experiments.
+ *
+ * Usage: `npm run train -- [runId] [--mnist] [--sample=N]`
  */
 const MNIST_TOPOLOGY = [784, 128, 10] as const;
 const MNIST_LEARNING_RATE = 0.1;
@@ -23,6 +25,7 @@ async function main(): Promise<void> {
   const positional = process.argv.slice(2).filter((argument) => !argument.startsWith('--'));
   const useMnist = process.argv.includes('--mnist');
   const runId = positional[0] ?? `run-${Date.now()}`;
+  const sampleSize = readSampleSize(process.argv);
 
   const input: TrainingRunInput = useMnist
     ? {
@@ -33,19 +36,21 @@ async function main(): Promise<void> {
         batch_size: MNIST_BATCH_SIZE,
       }
     : { ...DEFAULT_TRAINING_RUN, run_id: runId };
+  const run: TrainingRunInput = sampleSize === undefined ? input : { ...input, train_sample_size: sampleSize };
 
   console.log(`Starting training run ${runId}`);
   console.log(`  epochs:        ${input.epochs.length}`);
   console.log(`  topology:      ${input.topology.join(' -> ')}`);
   console.log(`  learning rate: ${input.learning_rate}`);
   console.log(`  batch size:    ${input.batch_size}`);
+  console.log(`  sample size:   ${sampleSize ?? 'full dataset'}`);
   console.log('');
 
   const result = await ductape.feature.execute({
     product: environment.product,
     env: environment.env,
     tag: 'train-digit-recogniser',
-    input: input as unknown as Record<string, unknown>,
+    input: run as unknown as Record<string, unknown>,
   });
 
   const output = result.output as TrainingRunOutput | undefined;
@@ -75,6 +80,29 @@ async function main(): Promise<void> {
     console.error('See the Durability section of the README before relying on feature.resume.');
     process.exitCode = 1;
   }
+}
+
+/**
+ * Reads `--sample=N` from the command line.
+ *
+ * @param argv - The process arguments.
+ * @returns The sample size, or undefined when the flag is absent.
+ * @throws {Error} When the flag is present but not a positive integer.
+ */
+function readSampleSize(argv: readonly string[]): number | undefined {
+  const flag = argv.find((argument) => argument.startsWith('--sample='));
+
+  if (flag === undefined) {
+    return undefined;
+  }
+
+  const value = Number(flag.slice('--sample='.length));
+
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(`--sample must be a positive integer, for example --sample=6000. Received ${flag}.`);
+  }
+
+  return value;
 }
 
 await main();

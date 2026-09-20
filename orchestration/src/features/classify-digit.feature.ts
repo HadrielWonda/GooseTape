@@ -26,6 +26,7 @@ export interface ClassifyRunOutput {
 /** Below this probability the prediction is reported as unconfident rather than accepted. */
 const CONFIDENCE_THRESHOLD = 0.6;
 
+/** Ignored by `@ductape/sdk` 0.3.7 for function steps, as in the training feature (#31). */
 const CLASSIFY_STEP_OPTIONS = {
   retries: 2,
   retry_interval: 1_000,

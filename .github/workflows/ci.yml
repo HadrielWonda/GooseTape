@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Everything here runs without Ductape credentials. The C# tests use the synthetic dataset and an
+# in-memory host, and the TypeScript checks never open a session.
+jobs:
+  dotnet:
+    name: .NET build, tests and coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore
+
+      # Directory.Build.props sets TreatWarningsAsErrors and EnforceCodeStyleInBuild, so analyzer
+      # and code-style violations fail here rather than needing a separate lint step.
+      - name: Build
+        run: dotnet build --configuration Release --no-restore
+
+      - name: Test with coverage
+        run: >
+          dotnet test --configuration Release --no-build
+          --collect:"XPlat Code Coverage"
+          --results-directory TestResults
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dotnet-coverage
+          path: TestResults/**/coverage.cobertura.xml
+
+      - name: Check for vulnerable packages
+        run: |
+          dotnet list package --vulnerable --include-transitive > vulnerable.txt 2>&1
+          cat vulnerable.txt
+          # `dotnet list package` exits 0 even when it finds something, so grep decides.
+          if grep -q "has the following vulnerable packages" vulnerable.txt; then
+            echo "::error::Vulnerable NuGet packages found"
+            exit 1
+          fi
+
+  orchestration:
+    name: Ductape orchestration checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: orchestration
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: orchestration/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # Runs Ductape's own control-flow validator over each feature handler. Catches a native
+      # `if` or `for` before anything reaches the workbench, and needs no credentials.
+      - name: Validate feature control flow
+        run: npm run compile:check
+
+      # Advisory only: the findings are in @ductape/sdk's dependency tree, not in this project,
+      # so they can't be fixed here and must not block the build.
+      - name: Audit dependencies (advisory)
+        continue-on-error: true
+        run: npm audit --audit-level=high
