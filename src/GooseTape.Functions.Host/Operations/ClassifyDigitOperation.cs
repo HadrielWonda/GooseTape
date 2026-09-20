@@ -50,7 +50,8 @@ public sealed class ClassifyDigitOperation : IPortableFunctionOperation
         var dataset = await _datasets.TrainingAsync().ConfigureAwait(false);
         GuardPixelCount(pixels.Count, dataset.PixelCount);
 
-        var network = await _checkpoints.LoadAsync(checkpointId, cancellationToken).ConfigureAwait(false);
+        var restored = await _checkpoints.LoadAsync(checkpointId, cancellationToken).ConfigureAwait(false);
+        var network = restored.Network;
         var distribution = network.Predict(Matrix.FromRow(NormaliseOrReject(pixels)));
         var digit = distribution.IndexOfLargestInRow(0);
 

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.AspNetCore.Http.Features;
 
 namespace GooseTape.Functions.Host.Ductape;
 
@@ -16,6 +17,17 @@ public static class PortableFunctionEndpoint
     /// <summary>The route Ductape derives from the configured function base URL.</summary>
     public const string RoutePattern = "/.well-known/ductape/functions/{contractNamespace}/{version}/{operation}";
 
+    /// <summary>
+    /// The largest invocation body this endpoint accepts.
+    /// </summary>
+    /// <remarks>
+    /// Weights never cross this boundary, so a legitimate payload is small: the widest is a
+    /// classify request, at roughly 800 KB for the maximum supported image. Kestrel's default of
+    /// 30 MB is far more than that, and this endpoint is reachable by anything that can open a
+    /// socket, so the limit is tightened here and applied before the body is read.
+    /// </remarks>
+    public const long MaxRequestBodyBytes = 2L * 1024 * 1024;
+
     private const string TimestampHeader = "x-ductape-timestamp";
     private const string SignatureHeader = "x-ductape-signature";
     private const string InvocationHeader = "x-ductape-invocation-id";
@@ -30,6 +42,7 @@ public static class PortableFunctionEndpoint
     /// <param name="operation">The operation segment of the route.</param>
     /// <param name="catalogue">The operations this host serves.</param>
     /// <param name="verifier">Verifies the request signature.</param>
+    /// <param name="ledger">Keeps each invocation identifier single-use within the replay window.</param>
     /// <param name="clock">Supplies the current time for the replay window.</param>
     /// <param name="loggerFactory">Creates the logger used for correlated logging.</param>
     /// <param name="cancellationToken">Token to monitor for cancellation requests.</param>
@@ -42,6 +55,7 @@ public static class PortableFunctionEndpoint
         string operation,
         PortableFunctionCatalogue catalogue,
         InvocationSignatureVerifier verifier,
+        InvocationLedger ledger,
         TimeProvider clock,
         ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
@@ -49,12 +63,27 @@ public static class PortableFunctionEndpoint
         ArgumentNullException.ThrowIfNull(httpContext);
         ArgumentNullException.ThrowIfNull(catalogue);
         ArgumentNullException.ThrowIfNull(verifier);
+        ArgumentNullException.ThrowIfNull(ledger);
         ArgumentNullException.ThrowIfNull(clock);
         ArgumentNullException.ThrowIfNull(loggerFactory);
 
         var logger = loggerFactory.CreateLogger(LoggerCategory);
-        var body = await ReadBodyAsync(httpContext).ConfigureAwait(false);
         var suppliedInvocationId = HeaderOrEmpty(httpContext, InvocationHeader);
+
+        if (IsTooLarge(httpContext))
+        {
+            EndpointLog.BodyTooLarge(logger, suppliedInvocationId, operation, httpContext.Request.ContentLength ?? -1);
+
+            return Rejection(
+                StatusCodes.Status413PayloadTooLarge,
+                suppliedInvocationId,
+                new PortableFunctionFailure(
+                    "FUNCTION_REQUEST_TOO_LARGE",
+                    $"Function request body exceeds the {MaxRequestBodyBytes} byte limit.",
+                    Retryable: false));
+        }
+
+        var body = await ReadBodyAsync(httpContext).ConfigureAwait(false);
 
         var authentic = verifier.IsValid(
             HeaderOrNull(httpContext, TimestampHeader),
@@ -79,6 +108,8 @@ public static class PortableFunctionEndpoint
                 new RequestEnvelope(body, contractNamespace, version, operation, suppliedInvocationId),
                 httpContext,
                 catalogue,
+                ledger,
+                clock,
                 logger,
                 cancellationToken)
             .ConfigureAwait(false);
@@ -90,6 +121,8 @@ public static class PortableFunctionEndpoint
         RequestEnvelope envelope,
         HttpContext httpContext,
         PortableFunctionCatalogue catalogue,
+        InvocationLedger ledger,
+        TimeProvider clock,
         ILogger logger,
         CancellationToken cancellationToken)
     {
@@ -118,17 +151,53 @@ public static class PortableFunctionEndpoint
                 new PortableFunctionFailure("FUNCTION_ROUTE_MISMATCH", mismatch, Retryable: false));
         }
 
-        return await ExecuteAsync(invocation, catalogue, logger, cancellationToken).ConfigureAwait(false);
+        var recorded = await ExecuteThroughLedgerAsync(invocation, catalogue, ledger, clock, logger, cancellationToken)
+            .ConfigureAwait(false);
+
+        return Results.Json(recorded.Payload, DuctapeJson.Options, statusCode: recorded.StatusCode);
     }
 
-    private static async Task<IResult> ExecuteAsync(
+    /// <summary>
+    /// Runs the invocation once per identifier, replaying the recorded response for repeats.
+    /// </summary>
+    /// <remarks>
+    /// An invocation with no identifier cannot be deduplicated, so it simply executes. Ductape
+    /// always supplies one.
+    /// </remarks>
+    private static Task<RecordedInvocation> ExecuteThroughLedgerAsync(
         PortableFunctionInvocation invocation,
         PortableFunctionCatalogue catalogue,
+        InvocationLedger ledger,
+        TimeProvider clock,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        var invocationId = invocation.Context.InvocationId;
+
+        if (string.IsNullOrWhiteSpace(invocationId))
+        {
+            return ExecuteAsync(invocation, catalogue, clock, logger, cancellationToken);
+        }
+
+        if (ledger.Contains(invocationId))
+        {
+            EndpointLog.InvocationReplayed(logger, invocationId, invocation.Function.Operation);
+        }
+
+        return ledger.ExecuteOnceAsync(
+            invocationId,
+            () => ExecuteAsync(invocation, catalogue, clock, logger, cancellationToken));
+    }
+
+    private static async Task<RecordedInvocation> ExecuteAsync(
+        PortableFunctionInvocation invocation,
+        PortableFunctionCatalogue catalogue,
+        TimeProvider clock,
         ILogger logger,
         CancellationToken cancellationToken)
     {
         using var scope = logger.BeginScope(ScopeFor(invocation));
-        var startedAt = TimeProvider.System.GetTimestamp();
+        var startedAt = clock.GetTimestamp();
 
         try
         {
@@ -138,22 +207,23 @@ public static class PortableFunctionEndpoint
                 .ExecuteAsync(invocation.Input, invocation.Context, cancellationToken)
                 .ConfigureAwait(false);
 
-            var elapsedMilliseconds = TimeProvider.System.GetElapsedTime(startedAt).TotalMilliseconds;
+            var elapsedMilliseconds = clock.GetElapsedTime(startedAt).TotalMilliseconds;
             EndpointLog.OperationCompleted(logger, invocation.Function.Operation, elapsedMilliseconds);
 
-            return Results.Json(
-                new PortableFunctionSuccess(invocation.Context.InvocationId, output),
-                DuctapeJson.Options);
+            return new RecordedInvocation(
+                StatusCodes.Status200OK,
+                new PortableFunctionSuccess(invocation.Context.InvocationId, output));
         }
         catch (PortableFunctionException failure)
         {
-            var elapsedMilliseconds = TimeProvider.System.GetElapsedTime(startedAt).TotalMilliseconds;
+            var elapsedMilliseconds = clock.GetElapsedTime(startedAt).TotalMilliseconds;
             EndpointLog.OperationFailed(logger, failure, invocation.Function.Operation, failure.Code, elapsedMilliseconds);
 
-            return Rejection(
+            return new RecordedInvocation(
                 StatusFor(failure.Code),
-                invocation.Context.InvocationId,
-                new PortableFunctionFailure(failure.Code, failure.Message, failure.Retryable));
+                new PortableFunctionRejection(
+                    invocation.Context.InvocationId,
+                    new PortableFunctionFailure(failure.Code, failure.Message, failure.Retryable)));
         }
     }
 
@@ -209,6 +279,25 @@ public static class PortableFunctionEndpoint
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// Rejects an over-large body before it is read, and caps what a chunked request may stream.
+    /// </summary>
+    /// <remarks>
+    /// A declared Content-Length is checked directly. A chunked request declares no length, so
+    /// the per-request Kestrel limit is lowered instead and enforced as the body is read.
+    /// </remarks>
+    private static bool IsTooLarge(HttpContext httpContext)
+    {
+        var sizeFeature = httpContext.Features.Get<IHttpMaxRequestBodySizeFeature>();
+
+        if (sizeFeature is { IsReadOnly: false })
+        {
+            sizeFeature.MaxRequestBodySize = MaxRequestBodyBytes;
+        }
+
+        return httpContext.Request.ContentLength > MaxRequestBodyBytes;
     }
 
     private static async Task<string> ReadBodyAsync(HttpContext httpContext)

@@ -47,21 +47,21 @@ public sealed class NetworkCheckpoints
     }
 
     /// <summary>
-    /// Loads a network from a checkpoint.
+    /// Loads a network from a checkpoint, together with the lineage recorded alongside it.
     /// </summary>
     /// <param name="checkpointId">The checkpoint to load.</param>
     /// <param name="cancellationToken">Token to monitor for cancellation requests.</param>
-    /// <returns>The restored network.</returns>
+    /// <returns>The restored network and its metadata, which is absent on older checkpoints.</returns>
     /// <exception cref="PortableFunctionException">
     /// Thrown when the checkpoint is missing, or holds a snapshot this host cannot rebuild.
     /// </exception>
-    public async Task<FeedForwardNetwork> LoadAsync(CheckpointId checkpointId, CancellationToken cancellationToken)
+    public async Task<RestoredCheckpoint> LoadAsync(CheckpointId checkpointId, CancellationToken cancellationToken)
     {
         try
         {
             var snapshot = await _store.LoadAsync(checkpointId, cancellationToken).ConfigureAwait(false);
 
-            return _serializer.FromSnapshot(snapshot);
+            return new RestoredCheckpoint(_serializer.FromSnapshot(snapshot), snapshot.Metadata);
         }
         catch (CheckpointNotFoundException failure)
         {
@@ -82,6 +82,7 @@ public sealed class NetworkCheckpoints
     /// </summary>
     /// <param name="checkpointId">The identifier to store under.</param>
     /// <param name="network">The network to store.</param>
+    /// <param name="metadata">The lineage to record alongside the weights.</param>
     /// <param name="cancellationToken">Token to monitor for cancellation requests.</param>
     /// <returns>A task that completes once the snapshot is durable.</returns>
     /// <exception cref="ArgumentNullException">Thrown when <paramref name="network"/> is null.</exception>
@@ -89,14 +90,16 @@ public sealed class NetworkCheckpoints
     public async Task SaveAsync(
         CheckpointId checkpointId,
         FeedForwardNetwork network,
+        CheckpointMetadata metadata,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(network);
+        ArgumentNullException.ThrowIfNull(metadata);
 
         try
         {
             await _store
-                .SaveAsync(checkpointId, NetworkSerializer.ToSnapshot(network), cancellationToken)
+                .SaveAsync(checkpointId, NetworkSerializer.ToSnapshot(network, metadata), cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (IOException failure)
@@ -105,4 +108,13 @@ public sealed class NetworkCheckpoints
             throw new PortableFunctionException("CHECKPOINT_WRITE_FAILED", failure.Message, retryable: true);
         }
     }
+
+    /// <summary>
+    /// A network restored from a checkpoint, with whatever lineage that checkpoint recorded.
+    /// </summary>
+    /// <param name="Network">The restored network.</param>
+    /// <param name="Metadata">
+    /// What produced the checkpoint, or null for one written before lineage was recorded.
+    /// </param>
+    public sealed record RestoredCheckpoint(FeedForwardNetwork Network, CheckpointMetadata? Metadata);
 }

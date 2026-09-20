@@ -40,7 +40,17 @@ public static class MatrixArithmetic
     {
         ArgumentNullException.ThrowIfNull(source);
 
-        return source.Map(value => value * factor);
+        // Deliberately not Map(value => value * factor): that lambda captures `factor`, so every
+        // call allocates a closure and invokes a delegate per element. Scaling runs on
+        // gradient-sized matrices for every batch, which makes it worth the explicit loop.
+        var values = new double[source.Shape.ElementCount];
+
+        for (var index = 0; index < values.Length; index++)
+        {
+            values[index] = source.Values[index] * factor;
+        }
+
+        return Matrix.Wrap(source.Shape, values);
     }
 
     /// <summary>

@@ -108,6 +108,52 @@ public sealed class TrainingFlowTests : IClassFixture<FunctionHostFactoryFixture
     }
 
     [Fact]
+    public async Task ACheckpointFromAnotherRun_IsRefused()
+    {
+        // The identifier alone proves nothing, so the recorded lineage is what catches this.
+        var borrowed = (await InitialiseAsync(NewRunId())).GetProperty("checkpoint_id").GetString()!;
+
+        var response = await InvokeAsync("train-epoch", new
+        {
+            run_id = NewRunId(),
+            epoch = 1,
+            from_checkpoint = borrowed,
+            learning_rate = LearningRate,
+            batch_size = BatchSize,
+            seed = Seed,
+        });
+
+        response.Status.Should().Be(HttpStatusCode.UnprocessableEntity);
+        var error = JsonDocument.Parse(response.Body).RootElement.GetProperty("error");
+        error.GetProperty("code").GetString().Should().Be("CHECKPOINT_LINEAGE_MISMATCH");
+        error.GetProperty("message").GetString().Should().Contain("belongs to run");
+    }
+
+    [Fact]
+    public async Task AnEpochThatSkipsItsPredecessor_IsRefused()
+    {
+        var runId = NewRunId();
+        var initial = await InitialiseAsync(runId);
+        var epochOne = await TrainEpochAsync(runId, 1, initial.GetProperty("checkpoint_id").GetString()!);
+
+        // Epoch 3 must continue from epoch 2, not epoch 1.
+        var response = await InvokeAsync("train-epoch", new
+        {
+            run_id = runId,
+            epoch = 3,
+            from_checkpoint = epochOne.GetProperty("checkpoint_id").GetString(),
+            learning_rate = LearningRate,
+            batch_size = BatchSize,
+            seed = Seed,
+        });
+
+        response.Status.Should().Be(HttpStatusCode.UnprocessableEntity);
+        var error = JsonDocument.Parse(response.Body).RootElement.GetProperty("error");
+        error.GetProperty("code").GetString().Should().Be("CHECKPOINT_LINEAGE_MISMATCH");
+        error.GetProperty("message").GetString().Should().Contain("must continue from epoch 2");
+    }
+
+    [Fact]
     public async Task TrainingFromAnUnknownCheckpoint_Fails()
     {
         var response = await InvokeAsync("train-epoch", new

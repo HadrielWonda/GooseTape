@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using GooseTape.Functions.Host.Ductape;
 using GooseTape.Functions.Host.Training;
+using GooseTape.NeuralNetwork.Checkpoints;
 using GooseTape.NeuralNetwork.Training;
 
 namespace GooseTape.Functions.Host.Operations;
@@ -62,14 +63,28 @@ public sealed class TrainEpochOperation : IPortableFunctionOperation
         var dataset = await _datasets.TrainingAsync().ConfigureAwait(false);
         var sample = request.SampleSize is null ? dataset : dataset.TakeAtMost(request.SampleSize.Value);
 
-        var network = await _checkpoints
-            .LoadAsync(NetworkCheckpoints.Parse(request.FromCheckpoint), cancellationToken)
-            .ConfigureAwait(false);
+        var parentId = NetworkCheckpoints.Parse(request.FromCheckpoint);
+        var parent = await _checkpoints.LoadAsync(parentId, cancellationToken).ConfigureAwait(false);
+        var datasetId = await _datasets.DatasetIdAsync().ConfigureAwait(false);
 
-        var outcome = Train(request, network, sample);
+        GuardLineage(parent.Metadata, request, parentId, datasetId);
+
+        var outcome = Train(request, parent.Network, sample);
         var checkpointId = NetworkCheckpoints.Parse($"{request.RunIdentifier}-epoch-{request.Epoch}");
 
-        await _checkpoints.SaveAsync(checkpointId, outcome.Network, cancellationToken).ConfigureAwait(false);
+        var metadata = new CheckpointMetadata(
+            request.RunIdentifier,
+            request.Epoch,
+            parentId.Value,
+            datasetId,
+            DescribeTopology(outcome.Network),
+            request.Seed,
+            request.LearningRate,
+            request.BatchSize,
+            DateTimeOffset.UtcNow,
+            CheckpointMetadata.CurrentFormatVersion);
+
+        await _checkpoints.SaveAsync(checkpointId, outcome.Network, metadata, cancellationToken).ConfigureAwait(false);
 
         return new TrainEpochOutput(
             checkpointId.Value,
@@ -79,6 +94,53 @@ public sealed class TrainEpochOperation : IPortableFunctionOperation
             outcome.Metrics.ExampleCount,
             Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds);
     }
+
+    /// <summary>
+    /// Checks that the checkpoint handed to this epoch is the one it claims to continue from.
+    /// </summary>
+    /// <remarks>
+    /// Names alone prove nothing: a caller can pass any checkpoint identifier. Comparing the
+    /// recorded lineage catches an epoch continued from the wrong run, from the wrong position in
+    /// its own run, or from a checkpoint trained on different data. Checkpoints written before
+    /// lineage was recorded carry no metadata and are accepted, since nothing can be checked.
+    /// </remarks>
+    private static void GuardLineage(
+        CheckpointMetadata? parent,
+        EpochRequest request,
+        CheckpointId parentId,
+        string datasetId)
+    {
+        if (parent is null)
+        {
+            return;
+        }
+
+        if (!string.Equals(parent.RunId, request.RunIdentifier, StringComparison.Ordinal))
+        {
+            throw Mismatch($"checkpoint {parentId} belongs to run {parent.RunId}, not {request.RunIdentifier}");
+        }
+
+        if (parent.Epoch != request.Epoch - 1)
+        {
+            throw Mismatch(
+                $"epoch {request.Epoch} must continue from epoch {request.Epoch - 1}, but checkpoint {parentId} holds epoch {parent.Epoch}");
+        }
+
+        if (!string.Equals(parent.DatasetId, datasetId, StringComparison.Ordinal))
+        {
+            throw Mismatch(
+                $"checkpoint {parentId} was trained on dataset {parent.DatasetId}, but this host is serving {datasetId}");
+        }
+    }
+
+    private static PortableFunctionException Mismatch(string detail) =>
+        new("CHECKPOINT_LINEAGE_MISMATCH", $"Refusing to train: {detail}.");
+
+    /// <summary>Describes the network shape the way checkpoint metadata records it.</summary>
+    private static string DescribeTopology(FeedForwardNetwork network) => CheckpointMetadata.DescribeTopology(
+        network.Layers
+            .Take(1).Select(layer => layer.Parameters.Weights.Shape.RowCount)
+            .Concat(network.Layers.Select(layer => layer.Parameters.Weights.Shape.ColumnCount)));
 
     private static EpochOutcome Train(EpochRequest request, FeedForwardNetwork network, NeuralNetwork.Data.ImageDataset sample)
     {

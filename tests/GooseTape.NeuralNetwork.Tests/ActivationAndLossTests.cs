@@ -32,6 +32,35 @@ public sealed class ActivationAndLossTests
     }
 
     [Fact]
+    public void Softmax_WithVeryNegativeLogits_StaysFiniteAndNormalised()
+    {
+        // Every exponent underflows towards zero here, so a naive implementation divides by zero.
+        var logits = Matrix.FromRow([-1000d, -1001d, -1002d]);
+
+        var probabilities = new SoftmaxActivation().Activate(logits);
+
+        probabilities.ToArray().Should().OnlyContain(value => double.IsFinite(value));
+        probabilities.Sum().Should().BeApproximately(1d, 1e-12);
+        probabilities.IndexOfLargestInRow(0).Should().Be(0);
+    }
+
+    [Fact]
+    public void Softmax_WithEqualLogits_SpreadsProbabilityEvenly()
+    {
+        var probabilities = new SoftmaxActivation().Activate(Matrix.FromRow([4d, 4d, 4d, 4d]));
+
+        probabilities.ToArray().Should().AllSatisfy(value => value.Should().BeApproximately(0.25d, 1e-12));
+    }
+
+    [Fact]
+    public void Softmax_WithASingleClass_ReturnsCertainty()
+    {
+        var probabilities = new SoftmaxActivation().Activate(Matrix.FromRow([-7.5d]));
+
+        probabilities[0, 0].Should().BeApproximately(1d, 1e-12);
+    }
+
+    [Fact]
     public void Softmax_IsShiftInvariant()
     {
         var activation = new SoftmaxActivation();

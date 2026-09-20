@@ -53,6 +53,10 @@ builder.Services.AddSingleton(services =>
         [.. services.GetRequiredService<IEnumerable<IPortableFunctionOperation>>()]);
 });
 
+// Makes each invocation single-use for as long as its signature stays valid, so a captured
+// request cannot be replayed inside the verifier's window.
+builder.Services.AddSingleton(services => InvocationLedger.Create(services.GetRequiredService<TimeProvider>()));
+
 builder.Services.AddSingleton(services => InvocationSignatureVerifier.Create(
     DuctapeAccessKey.Create(services.GetRequiredService<IOptions<DuctapeOptions>>().Value.AccessKey)));
 

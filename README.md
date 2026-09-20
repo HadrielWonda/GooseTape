@@ -91,6 +91,20 @@ epoch 2     ->  reads run-42-epoch-1, writes run-42-epoch-2
 
 Checkpoint identifiers are validated against `[A-Za-z0-9_-]{1,128}` at the boundary, because they address files and arrive from outside the process.
 
+### A checkpoint records where it came from
+
+A name is not proof. Any caller can pass any checkpoint identifier, so each checkpoint stores its own lineage beside the weights: the run that wrote it, the epoch it holds, the checkpoint it continued from, the dataset it was trained on, the topology, the seed and the schedule.
+
+Every epoch checks that lineage before training and refuses to continue from the wrong thing:
+
+```
+epoch 3 of run B, handed run A's checkpoint   -> CHECKPOINT_LINEAGE_MISMATCH: belongs to run A
+epoch 3, handed the epoch 1 checkpoint        -> CHECKPOINT_LINEAGE_MISMATCH: must continue from epoch 2
+epoch 3, after the dataset changed underneath -> CHECKPOINT_LINEAGE_MISMATCH: trained on a different dataset
+```
+
+The dataset is identified by the content of its image and label files, so swapping the data behind unchanged paths changes the identifier and the mismatch is caught. Generated data is identified by the parameters that produce it. Checkpoints written before lineage existed carry no metadata and are accepted, since there is nothing to check against.
+
 ### Why an epoch is safe to retry
 
 `FeedForwardNetwork` is immutable — training returns a *new* network. A failed epoch cannot leave torn state behind.
@@ -118,7 +132,9 @@ src/GooseTape.Functions.Host/     ASP.NET Core portable function host
   Operations/      the four operations
   Training/        dataset provider, checkpoint service
 
-tests/             126 tests: network maths, gradient checks, IDX parsing, validation, HTTP boundary
+tests/             151 tests: network maths, gradient checks, IDX parsing, validation,
+                   crash consistency, HTTP boundary, replay handling, dataset identity
+benchmarks/        BenchmarkDotNet suite for the matrix and training hot paths
 orchestration/     the Ductape layer
   contracts/       the portable function contract
   features/        the two features
@@ -145,7 +161,7 @@ orchestration/     the Ductape layer
 dotnet test
 ```
 
-126 tests: 105 over the network itself, 21 over the signed HTTP boundary. Coverage is 93.5% of lines and 82.4% of branches; the network library alone is 96.6%.
+151 tests: 113 over the network itself, 38 over the signed HTTP boundary. Coverage is 92.9% of lines and 81.5% of branches; the network library alone is 96.8%.
 
 ```bash
 dotnet test --collect:"XPlat Code Coverage"
@@ -298,6 +314,17 @@ Gzipped files are read directly. The topology's first entry must equal the datas
 
 ---
 
+## Benchmarks
+
+```bash
+dotnet run -c Release --project benchmarks/GooseTape.Benchmarks
+dotnet run -c Release --project benchmarks/GooseTape.Benchmarks -- --filter *Matrix*
+```
+
+Covers the matrix operations an epoch spends its time in, at real MNIST shapes and batch sizes of 32, 64 and 128, plus a full parameter update, an epoch over a sample, and a checkpoint round trip. `[MemoryDiagnoser]` is on, which is the point: training returns a new network for every batch, and these numbers price that choice rather than leaving it to intuition.
+
+---
+
 ## Continuous integration
 
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push and pull request to `main`, in two jobs, neither of which needs Ductape credentials:
@@ -324,6 +351,8 @@ All three are in `@ductape/sdk` 0.3.7. The first two have workarounds in [orches
 - The access key is read from the environment, held only as HMAC key bytes, and its `ToString()` returns `[redacted access key]` so it cannot reach a log through interpolation.
 - Signatures are compared in fixed time (`CryptographicOperations.FixedTimeEquals`). An early-returning comparison leaks how much of a forged signature was correct.
 - Requests older than five minutes are rejected, matching the SDK's replay window.
+- **Each invocation runs at most once.** The timestamp window bounds how long a captured request stays valid, but inside that window the same request could be sent again. Every `invocation_id` is recorded and its response replayed instead of re-executed, for as long as its signature could still verify. Ductape mints a fresh identifier per attempt, so a repeat is a replay, not a legitimate retry.
+- **The body size is capped at 2 MB before the body is read.** Weights never cross this boundary, so a legitimate payload is small; Kestrel's 30 MB default is far more than is needed here.
 - The signature is verified against the **raw body before it is parsed**, so malformed payloads never reach a deserialiser.
 - Route segments and the `x-ductape-function` header are both checked against the signed body, so a validly signed request cannot be redirected at another operation in flight.
 - Every input field is re-validated at the boundary, even though Ductape validates against the contract schema first — this host is reachable by anything holding the key.

@@ -61,7 +61,19 @@ public sealed class InitializeNetworkOperation : IPortableFunctionOperation
         var network = NetworkInitializer.Create(topology, RandomSeed.Create(seed));
         var checkpointId = NetworkCheckpoints.Parse($"{runIdentifier}-epoch-0");
 
-        await _checkpoints.SaveAsync(checkpointId, network, cancellationToken).ConfigureAwait(false);
+        var metadata = new CheckpointMetadata(
+            runIdentifier,
+            Epoch: 0,
+            ParentCheckpointId: null,
+            await _datasets.DatasetIdAsync().ConfigureAwait(false),
+            CheckpointMetadata.DescribeTopology(sizes),
+            seed,
+            LearningRate: null,
+            BatchSize: null,
+            DateTimeOffset.UtcNow,
+            CheckpointMetadata.CurrentFormatVersion);
+
+        await _checkpoints.SaveAsync(checkpointId, network, metadata, cancellationToken).ConfigureAwait(false);
 
         return new InitializeNetworkOutput(
             checkpointId.Value,

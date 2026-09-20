@@ -40,13 +40,14 @@ public sealed class NetworkSerializer
     /// Flattens a network into a storable snapshot.
     /// </summary>
     /// <param name="network">The network to flatten.</param>
+    /// <param name="metadata">What produced this checkpoint, recorded alongside the weights.</param>
     /// <returns>The snapshot.</returns>
     /// <exception cref="ArgumentNullException">Thrown when <paramref name="network"/> is null.</exception>
-    public static NetworkSnapshot ToSnapshot(FeedForwardNetwork network)
+    public static NetworkSnapshot ToSnapshot(FeedForwardNetwork network, CheckpointMetadata? metadata = null)
     {
         ArgumentNullException.ThrowIfNull(network);
 
-        return new NetworkSnapshot([.. network.Layers.Select(ToLayerSnapshot)], network.Loss.Name);
+        return new NetworkSnapshot([.. network.Layers.Select(ToLayerSnapshot)], network.Loss.Name, metadata);
     }
 
     /// <summary>

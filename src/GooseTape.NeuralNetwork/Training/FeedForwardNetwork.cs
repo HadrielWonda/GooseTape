@@ -5,7 +5,7 @@ using GooseTape.NeuralNetwork.Maths;
 namespace GooseTape.NeuralNetwork.Training;
 
 /// <summary>
-/// An immutable feed forward network trained by batch gradient descent.
+/// An immutable feed forward network trained by mini-batch stochastic gradient descent.
 /// </summary>
 /// <remarks>
 /// Training returns a new network rather than mutating this one. That is what makes an epoch

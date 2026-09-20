@@ -11,7 +11,8 @@ namespace GooseTape.Functions.Host.Tests;
 /// Hosts the function host in memory, configured against the synthetic dataset and a checkpoint
 /// directory unique to the test run.
 /// </summary>
-internal sealed class FunctionHostFactory : WebApplicationFactory<Program>
+/// <remarks>Open for subclassing so a test can register extra operations.</remarks>
+internal class FunctionHostFactory : WebApplicationFactory<Program>
 {
     public const string AccessKey = "test-access-key-not-a-real-secret";
     public const string FunctionNamespace = "goosetape.neural-network";

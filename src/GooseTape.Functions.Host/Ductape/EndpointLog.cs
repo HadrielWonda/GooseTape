@@ -17,10 +17,22 @@ internal static partial class EndpointLog
     public static partial void SignatureRejected(ILogger logger, string invocationId, string operation);
 
     [LoggerMessage(
+        EventId = 1004,
+        Level = LogLevel.Warning,
+        Message = "Rejected portable function invocation {InvocationId} for {Operation}: body of {ContentLength} bytes is too large.")]
+    public static partial void BodyTooLarge(ILogger logger, string invocationId, string operation, long contentLength);
+
+    [LoggerMessage(
         EventId = 1001,
         Level = LogLevel.Warning,
         Message = "Rejected portable function invocation {InvocationId}: {Reason}")]
     public static partial void InvocationRejected(ILogger logger, string invocationId, string reason);
+
+    [LoggerMessage(
+        EventId = 1005,
+        Level = LogLevel.Warning,
+        Message = "Replayed invocation {InvocationId} for {Operation}: answered from the ledger without executing again.")]
+    public static partial void InvocationReplayed(ILogger logger, string invocationId, string operation);
 
     [LoggerMessage(
         EventId = 1002,

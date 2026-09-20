@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using GooseTape.NeuralNetwork.Data;
 using Microsoft.Extensions.Options;
 
@@ -21,8 +22,10 @@ namespace GooseTape.Functions.Host.Training;
 /// </remarks>
 public sealed class DatasetProvider
 {
-    private readonly Lazy<Task<ImageDataset>> _training;
-    private readonly Lazy<Task<ImageDataset>> _test;
+    /// <summary>How many characters of the content hash identify an IDX dataset.</summary>
+    private const int DatasetIdLength = 16;
+
+    private readonly DatasetHandles _handles;
 
     /// <summary>
     /// Creates a provider over the configured data sources.
@@ -36,17 +39,64 @@ public sealed class DatasetProvider
 
         var settings = options.Value;
 
-        _training = new Lazy<Task<ImageDataset>>(() => TrainingSource(settings).LoadAsync());
-        _test = new Lazy<Task<ImageDataset>>(() => TestSource(settings).LoadAsync());
+        _handles = new DatasetHandles(
+            new Lazy<Task<ImageDataset>>(() => TrainingSource(settings).LoadAsync()),
+            new Lazy<Task<ImageDataset>>(() => TestSource(settings).LoadAsync()),
+            new Lazy<Task<string>>(() => IdentifyAsync(settings)));
     }
 
     /// <summary>Gets the training dataset, loading it on first use.</summary>
     /// <returns>The training dataset.</returns>
-    public Task<ImageDataset> TrainingAsync() => _training.Value;
+    public Task<ImageDataset> TrainingAsync() => _handles.Training.Value;
 
     /// <summary>Gets the test dataset, loading it on first use.</summary>
     /// <returns>The test dataset.</returns>
-    public Task<ImageDataset> TestAsync() => _test.Value;
+    public Task<ImageDataset> TestAsync() => _handles.Test.Value;
+
+    /// <summary>
+    /// Gets a stable identifier for the training data.
+    /// </summary>
+    /// <remarks>
+    /// Real data is identified by the content of its image and label files, so swapping the
+    /// dataset underneath a run changes the identifier even when the paths do not. Generated data
+    /// is identified by the parameters that produce it, which determine it completely.
+    /// </remarks>
+    /// <returns>The dataset identifier.</returns>
+    public Task<string> DatasetIdAsync() => _handles.Identity.Value;
+
+    private static async Task<string> IdentifyAsync(DatasetOptions settings)
+    {
+        if (!settings.UsesIdxFiles)
+        {
+            return $"synthetic:{settings.SyntheticTrainingExamplesPerClass}:{settings.SyntheticSeed}";
+        }
+
+        var images = RequirePath(settings.TrainingImagesPath, nameof(DatasetOptions.TrainingImagesPath));
+        var labels = RequirePath(settings.TrainingLabelsPath, nameof(DatasetOptions.TrainingLabelsPath));
+
+        return $"idx:{await HashFilesAsync(images, labels).ConfigureAwait(false)}";
+    }
+
+    private static async Task<string> HashFilesAsync(string imagePath, string labelPath)
+    {
+        using var hash = SHA256.Create();
+
+        foreach (var path in new[] { imagePath, labelPath })
+        {
+            await using var file = File.OpenRead(path);
+            var buffer = new byte[81920];
+            int read;
+
+            while ((read = await file.ReadAsync(buffer).ConfigureAwait(false)) > 0)
+            {
+                hash.TransformBlock(buffer, 0, read, null, 0);
+            }
+        }
+
+        hash.TransformFinalBlock([], 0, 0);
+
+        return Convert.ToHexStringLower(hash.Hash!)[..DatasetIdLength];
+    }
 
     private static IImageDatasetSource TrainingSource(DatasetOptions settings) => settings.UsesIdxFiles
         ? IdxDatasetSource.Create(
@@ -70,4 +120,9 @@ public sealed class DatasetProvider
 
         return value;
     }
+
+    private sealed record DatasetHandles(
+        Lazy<Task<ImageDataset>> Training,
+        Lazy<Task<ImageDataset>> Test,
+        Lazy<Task<string>> Identity);
 }

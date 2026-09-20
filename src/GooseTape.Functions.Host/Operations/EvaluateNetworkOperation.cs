@@ -50,7 +50,8 @@ public sealed class EvaluateNetworkOperation : IPortableFunctionOperation
 
         var dataset = await _datasets.TestAsync().ConfigureAwait(false);
         var sample = sampleSize is null ? dataset : dataset.TakeAtMost(sampleSize.Value);
-        var network = await _checkpoints.LoadAsync(checkpointId, cancellationToken).ConfigureAwait(false);
+        var restored = await _checkpoints.LoadAsync(checkpointId, cancellationToken).ConfigureAwait(false);
+        var network = restored.Network;
 
         var batch = sample.AsSingleBatch();
         var metrics = network.Evaluate(batch.Inputs, batch.Expected);

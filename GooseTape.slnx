@@ -1,4 +1,7 @@
 <Solution>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/GooseTape.Benchmarks/GooseTape.Benchmarks.csproj" />
+  </Folder>
   <Folder Name="/src/">
     <Project Path="src/GooseTape.Functions.Host/GooseTape.Functions.Host.csproj" />
     <Project Path="src/GooseTape.NeuralNetwork/GooseTape.NeuralNetwork.csproj" />

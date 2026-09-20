@@ -72,3 +72,6 @@ dist/
 # src/GooseTape.NeuralNetwork/Data/ on case-insensitive filesystems, which silently kept nine
 # source files out of the repository.
 /data/
+
+# BenchmarkDotNet output
+BenchmarkDotNet.Artifacts/
