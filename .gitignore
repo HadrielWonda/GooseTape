@@ -67,5 +67,8 @@ dist/
 # Network checkpoints written by the function host at runtime
 .checkpoints/
 
-# MNIST dataset files (download separately, see README)
-data/
+# MNIST dataset files (download separately, see README).
+# Anchored to the repository root: an unanchored "data/" also matches the source folder
+# src/GooseTape.NeuralNetwork/Data/ on case-insensitive filesystems, which silently kept nine
+# source files out of the repository.
+/data/
