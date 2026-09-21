@@ -225,7 +225,45 @@ public static class PortableFunctionEndpoint
                     invocation.Context.InvocationId,
                     new PortableFunctionFailure(failure.Code, failure.Message, failure.Retryable)));
         }
+        catch (Exception failure) when (!IsCallerCancellation(failure, cancellationToken))
+        {
+            var elapsedMilliseconds = clock.GetElapsedTime(startedAt).TotalMilliseconds;
+            EndpointLog.OperationCrashed(logger, failure, invocation.Function.Operation, elapsedMilliseconds);
+
+            return UnexpectedFailure(invocation);
+        }
     }
+
+    /// <summary>
+    /// Builds the response for a failure no operation anticipated.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is an execution boundary, so it answers in the same structured shape as every other
+    /// failure rather than leaving the framework to decide what the caller sees. The exception's
+    /// own message is logged but never returned: it can carry file paths, configuration or data
+    /// that should not leave the host. The invocation identifier ties the response to the log.
+    /// </para>
+    /// <para>
+    /// Marked retryable because an unanticipated failure may well be transient, and every
+    /// operation here is idempotent, so a retry is safe even when it does not help.
+    /// </para>
+    /// </remarks>
+    private static RecordedInvocation UnexpectedFailure(PortableFunctionInvocation invocation) => new(
+        StatusCodes.Status500InternalServerError,
+        new PortableFunctionRejection(
+            invocation.Context.InvocationId,
+            new PortableFunctionFailure(
+                "FUNCTION_EXECUTION_FAILED",
+                $"{invocation.Function.Operation} failed unexpectedly. The details are in the host log under invocation {invocation.Context.InvocationId}.",
+                Retryable: true)));
+
+    /// <summary>
+    /// Reports whether a failure is only the caller going away, which is not the operation's fault
+    /// and has no one left to answer.
+    /// </summary>
+    private static bool IsCallerCancellation(Exception failure, CancellationToken cancellationToken) =>
+        failure is OperationCanceledException && cancellationToken.IsCancellationRequested;
 
     private static Dictionary<string, object> ScopeFor(PortableFunctionInvocation invocation) => new(StringComparer.Ordinal)
     {

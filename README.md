@@ -249,6 +249,10 @@ What didn't happen: any retry. The restarted host received **zero** requests, an
 
 **Not working: step retries** ([#31](https://github.com/Ductape-LLC/ductape-emails/issues/31)). Every epoch step carries `retries: 2` with exponential backoff, and reading the definition back out of Ductape confirms it's stored. The local executor runs a step once and, on failure, checks `allow_fail`/`optional` and gives up. It only forwards `retries` for `action` steps, which the processor handles; our epochs are `function` steps, so their retry policy is ignored.
 
+**Not working: `feature.dispatch`, or retries at the job level** ([#33](https://github.com/Ductape-LLC/ductape-emails/issues/33)). `dispatch` was the remaining hope for durability, since it runs a feature as a queued job, and the job worker has retries of its own. Tested with Redis connected and `monitor()` running, it still throws `Queues not configured`. The feature service builds its processor without the client's queue, and it's the only `dispatch` in the SDK that does. It also creates a product job before failing, and returns a made-up `job_id` rather than the real one.
+
+Enqueuing the same job through the client's own processor gets past that, and the worker runs the feature. But with `retries: 2` and a failing first step, the job is filed as `completed`, with no retry: the worker only retries when something throws, and a failed feature run is returned, not thrown. So on 0.3.7, no layer retries a failed function step.
+
 **Not working yet: Ductape's run-management APIs** ([#29](https://github.com/Ductape-LLC/ductape-emails/issues/29)). `feature.execute` runs the feature in the local process. Its step and run results do reach Ductape: they're written through `/integrations/v1/processor/batch-write`, and every run here can be fetched back by ID. But `feature.status`, `history`, `stepDetail`, `resume`, `replay`, `restart`, `cancel`, `signal` and `compare` all call routes under `/integrations/v1/workflow/`, and on 0.3.7 **none of those routes are served**. Each returns Express's default `Cannot GET` or `Cannot POST` page, for real run IDs and made-up ones alike.
 
 The SDK hides this. `status()` and `stepDetail()` turn any 404 into `null`, and `resume()` checks `status()` first and throws `Feature <id> not found`. So a missing endpoint reads as a missing run.
@@ -338,11 +342,15 @@ The C# tests are hermetic: they use the synthetic dataset and an in-memory host,
 
 ## Ductape SDK issues found along the way
 
-All three are in `@ductape/sdk` 0.3.7. The first two have workarounds in [orchestration/src/config/ductape-client.ts](orchestration/src/config/ductape-client.ts).
+All are in `@ductape/sdk` 0.3.7 unless noted. #27 and #28 have workarounds in [orchestration/src/config/ductape-client.ts](orchestration/src/config/ductape-client.ts).
 
 - **[#27](https://github.com/Ductape-LLC/ductape-emails/issues/27): the ESM type entry resolves the client to `any`.** `dist/index.d.mts` declares `typeof sdk.default` when `sdk` is already the class. With `skipLibCheck` on, which is the norm, the error is hidden and every client call goes unchecked. Here it hid four mistakes, one of which crashed at runtime. Workaround: type the client from `@ductape/sdk/dist/index`.
 - **[#28](https://github.com/Ductape-LLC/ductape-emails/issues/28): `close()` doesn't drain the result queue, and there's no public flush.** `await ductape.close()` followed by `process.exit()` dropped the final execution record in 3 of 3 trials. A plain exit delivers it anyway, but only because an in-flight request happens to keep Node alive. Workaround: `flushPendingWrites()`, which the CLIs call before exiting.
 - **[#29](https://github.com/Ductape-LLC/ductape-emails/issues/29): the feature run-management routes aren't served.** Every `/integrations/v1/workflow/` route behind `status`, `history`, `resume`, `replay`, `cancel` and the rest returns Express's default 404 page. The SDK reports that as the run not being found. No workaround: see Durability above.
+- **[#30](https://github.com/Ductape-LLC/ductape-emails/issues/30): `ductape login --browser` crashes on Windows** (`@ductape/cli` 0.4.6). It spawns `start`, which is a `cmd.exe` builtin rather than an executable, and nothing handles the error. A preload shim that swaps in `rundll32 url.dll,FileProtocolHandler` works around it.
+- **[#31](https://github.com/Ductape-LLC/ductape-emails/issues/31): step retry options are stored but never applied to function steps.** See Durability.
+- **[#32](https://github.com/Ductape-LLC/ductape-emails/issues/32): a failed run reports `rolled_back` even when nothing was rolled back.** Any ordinary step failure ends as `rolled_back`, whether or not a rollback handler ran, so the status can't tell "failed" from "compensated".
+- **[#33](https://github.com/Ductape-LLC/ductape-emails/issues/33): `feature.dispatch` always throws `Queues not configured`.** See Durability.
 
 ---
 
@@ -355,6 +363,7 @@ All three are in `@ductape/sdk` 0.3.7. The first two have workarounds in [orches
 - **The body size is capped at 2 MB before the body is read.** Weights never cross this boundary, so a legitimate payload is small; Kestrel's 30 MB default is far more than is needed here.
 - The signature is verified against the **raw body before it is parsed**, so malformed payloads never reach a deserialiser.
 - Route segments and the `x-ductape-function` header are both checked against the signed body, so a validly signed request cannot be redirected at another operation in flight.
+- **Unanticipated failures get the same structured answer as expected ones.** An exception no operation planned for becomes a `FUNCTION_EXECUTION_FAILED` 500 that carries the invocation id. The exception itself is logged but never returned, because its message can carry paths, configuration or data.
 - Every input field is re-validated at the boundary, even though Ductape validates against the contract schema first — this host is reachable by anything holding the key.
 
 ## Conventions

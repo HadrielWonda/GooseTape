@@ -35,6 +35,16 @@ internal static partial class EndpointLog
     public static partial void InvocationReplayed(ILogger logger, string invocationId, string operation);
 
     [LoggerMessage(
+        EventId = 1006,
+        Level = LogLevel.Error,
+        Message = "Operation {Operation} failed unexpectedly after {ElapsedMilliseconds}ms.")]
+    public static partial void OperationCrashed(
+        ILogger logger,
+        Exception exception,
+        string operation,
+        double elapsedMilliseconds);
+
+    [LoggerMessage(
         EventId = 1002,
         Level = LogLevel.Information,
         Message = "Completed {Operation} in {ElapsedMilliseconds}ms.")]
