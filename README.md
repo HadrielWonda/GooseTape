@@ -2,6 +2,13 @@
 
 A from-scratch neural network in C#, trained as a **durable Ductape workflow**.
 
+**At a glance**
+
+- **97.9% test accuracy on MNIST** after 8 epochs, with no ML libraries: every matrix operation and gradient is hand-written C#.
+- **Each epoch is a durable workflow step.** Killing the host in the middle of epoch 3 lost only epoch 3; the checkpoints for epochs 0 to 2 survived.
+- **Two durability gaps found and reported:** on Ductape SDK 0.3.7, step retries are stored but never run, and a crashed run does not resume. Details and reproductions are in [Durability](#durability-what-is-and-isnt-verified).
+- **151 tests, 92.9% line coverage**, and BenchmarkDotNet numbers for the hot paths.
+
 The network is the one from Milan Jovanović's [*I Built a Neural Network in C# From Scratch*](https://youtu.be/wgNZWnua-90) — dense layers, ReLU, softmax, cross-entropy, backpropagation, no ML libraries. What is different here is everything around it: training does not run as a loop inside a process. Each epoch is a **step in a Ductape feature**, checkpointed, so a crash costs one epoch rather than the whole run. The design calls for Ductape to retry a failed epoch and resume a crashed run. On SDK 0.3.7 it does neither, and both have been tested (see [Durability](#durability-what-is-and-isnt-verified)).
 
 This repo is, in its original spirit, an attempt to break [@snifideezy's Ductape](https://www.ductape.app) by pointing it at a workload it was not designed for.
